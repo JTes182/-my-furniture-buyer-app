@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Furniture Buyer",
+  title: "Comfy Land",
   description: "Browse furniture and place orders against your budget.",
 };
 

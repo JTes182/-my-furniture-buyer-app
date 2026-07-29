@@ -41,7 +41,7 @@ export default function ProductCard({ product }: { product: Product }) {
   }
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-lg border border-black/10 dark:border-white/10">
+    <div className="flex flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition-shadow hover:shadow-md">
       <Image
         src={product.imageUrl}
         alt={product.name}
@@ -51,12 +51,12 @@ export default function ProductCard({ product }: { product: Product }) {
         unoptimized
       />
       <div className="flex flex-1 flex-col gap-2 p-4">
-        <span className="text-xs uppercase tracking-wide text-black/50 dark:text-white/50">
+        <span className="w-fit rounded-full bg-muted px-2 py-0.5 text-xs uppercase tracking-wide text-muted-foreground">
           {product.category}
         </span>
-        <h3 className="font-semibold">{product.name}</h3>
-        <p className="flex-1 text-sm text-black/70 dark:text-white/70">{product.description}</p>
-        <p className="font-medium">${product.price.toFixed(2)}</p>
+        <h3 className="font-semibold text-card-foreground">{product.name}</h3>
+        <p className="flex-1 text-sm text-muted-foreground">{product.description}</p>
+        <p className="font-medium text-card-foreground">${product.price.toFixed(2)}</p>
 
         <div className="flex items-center gap-2 pt-2">
           <input
@@ -64,19 +64,19 @@ export default function ProductCard({ product }: { product: Product }) {
             min={1}
             value={quantity}
             onChange={(e) => setQuantity(Math.max(1, Number(e.target.value)))}
-            className="w-16 rounded border border-black/20 px-2 py-1 text-sm dark:border-white/20 dark:bg-transparent"
+            className="w-16 rounded-full border border-border px-3 py-1.5 text-sm"
           />
           <button
             onClick={handleOrder}
             disabled={status === "loading"}
-            className="flex-1 rounded bg-black px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 dark:bg-white dark:text-black"
+            className="flex-1 rounded-full bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {status === "loading" ? "Placing order..." : "Place order"}
           </button>
         </div>
 
         {status === "error" && <p className="text-sm text-red-600">{error}</p>}
-        {status === "success" && <p className="text-sm text-green-600">Order placed!</p>}
+        {status === "success" && <p className="text-sm text-accent">Order placed!</p>}
       </div>
     </div>
   );

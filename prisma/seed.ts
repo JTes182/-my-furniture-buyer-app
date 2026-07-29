@@ -1,74 +1,63 @@
 import "dotenv/config";
+import { MongoClient } from "mongodb";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "../src/generated/prisma/client";
 
 const adapter = new PrismaBetterSqlite3({ url: process.env.DATABASE_URL! });
 const prisma = new PrismaClient({ adapter });
 
-const products = [
-  {
-    name: "Oakwood Dining Table",
-    description: "Solid oak table that seats six. Timeless and sturdy.",
-    price: 649.0,
-    imageUrl: "https://placehold.co/400x300?text=Dining+Table",
-    category: "Dining",
-  },
-  {
-    name: "Linen Sofa (3-seater)",
-    description: "Soft linen upholstery over a hardwood frame.",
-    price: 899.0,
-    imageUrl: "https://placehold.co/400x300?text=Sofa",
-    category: "Living Room",
-  },
-  {
-    name: "Walnut Bookshelf",
-    description: "Five-tier open shelving in warm walnut veneer.",
-    price: 219.0,
-    imageUrl: "https://placehold.co/400x300?text=Bookshelf",
-    category: "Storage",
-  },
-  {
-    name: "Queen Platform Bed Frame",
-    description: "Minimalist frame with built-in headboard, no box spring needed.",
-    price: 429.0,
-    imageUrl: "https://placehold.co/400x300?text=Bed+Frame",
-    category: "Bedroom",
-  },
-  {
-    name: "Ergonomic Office Chair",
-    description: "Adjustable lumbar support and armrests, breathable mesh back.",
-    price: 189.0,
-    imageUrl: "https://placehold.co/400x300?text=Office+Chair",
-    category: "Office",
-  },
-  {
-    name: "Round Coffee Table",
-    description: "Tempered glass top on a brushed brass base.",
-    price: 149.0,
-    imageUrl: "https://placehold.co/400x300?text=Coffee+Table",
-    category: "Living Room",
-  },
-  {
-    name: "Rattan Accent Chair",
-    description: "Handwoven natural rattan with a removable cushion.",
-    price: 259.0,
-    imageUrl: "https://placehold.co/400x300?text=Accent+Chair",
-    category: "Living Room",
-  },
-  {
-    name: "6-Drawer Dresser",
-    description: "Ample storage with soft-close drawers, in matte white.",
-    price: 349.0,
-    imageUrl: "https://placehold.co/400x300?text=Dresser",
-    category: "Bedroom",
-  },
-];
+type CatalogDoc = {
+  product_name: string;
+  category: string;
+  price: number;
+  colours?: string[];
+  width?: number | null;
+  depth?: number | null;
+  height?: number | null;
+  image_url: string; // actually raw base64 image bytes, not a URL
+  image_mime_type: string;
+};
+
+function describe(doc: CatalogDoc): string {
+  const parts: string[] = [];
+  if (doc.colours?.length) parts.push(`Colour: ${doc.colours.join(", ")}`);
+
+  const dimensions = [
+    doc.width ? `width ${doc.width}cm` : null,
+    doc.depth ? `depth ${doc.depth}cm` : null,
+    doc.height ? `height ${doc.height}cm` : null,
+  ].filter(Boolean);
+  if (dimensions.length) parts.push(dimensions.join(", "));
+
+  return parts.length ? parts.join(". ") + "." : `${doc.category} item.`;
+}
+
+async function fetchCatalogue() {
+  const client = new MongoClient(process.env.MONGODB_URI!);
+  try {
+    await client.connect();
+    const docs = await client.db().collection<CatalogDoc>("catalog").find({}).toArray();
+    return docs.map((doc) => ({
+      name: doc.product_name,
+      description: describe(doc),
+      price: doc.price,
+      category: doc.category,
+      imageUrl: `data:${doc.image_mime_type};base64,${doc.image_url}`,
+    }));
+  } finally {
+    await client.close();
+  }
+}
 
 async function main() {
+  console.log("Fetching catalogue from MongoDB...");
+  const products = await fetchCatalogue();
+  console.log(`Fetched ${products.length} products.`);
+
   await prisma.order.deleteMany();
   await prisma.product.deleteMany();
   await prisma.product.createMany({ data: products });
-  console.log(`Seeded ${products.length} products.`);
+  console.log(`Seeded ${products.length} products into the local database.`);
 }
 
 main()

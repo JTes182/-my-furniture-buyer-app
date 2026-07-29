@@ -19,6 +19,7 @@ model User {
   budget       Float    @default(2000)
   createdAt    DateTime @default(now())
   orders       Order[]
+  liveOrders   LiveOrder[]
 }
 
 model Product {
@@ -41,4 +42,20 @@ model Order {
   userId    String
   product   Product @relation(fields: [productId], references: [id])
   productId String
+}
+
+// Links a local app user to a real order placed on the furniture shop API.
+// The API's account (FURNITURE_API_USER_ID) is shared across every local
+// app user, so GET /orders/{user_id} returns everyone's purchases mixed
+// together — this table is how we know which ones "belong" to which local
+// user, purely for display on their Orders page. Doesn't duplicate order
+// details (product, price, quantity); those are still fetched fresh from
+// the API and matched up by apiOrderId.
+model LiveOrder {
+  id         String   @id @default(cuid())
+  apiOrderId String   @unique
+  createdAt  DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id])
+  userId String
 }
