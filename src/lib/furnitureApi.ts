@@ -44,6 +44,7 @@ export type CatalogueItem = {
   category: string;
   name: string;
   price: number;
+  colours: string[];
   imageUrl: string;
 };
 
@@ -96,10 +97,57 @@ export async function fetchCatalogueFromApi(opts?: {
       category: item.category,
       name: item.product_name,
       price: item.price,
+      colours: item.colours,
       imageUrl: getCatalogueImageUrl(item.item_id)!,
     }));
   } catch (err) {
     console.warn("Furniture API search-index request threw an error:", err);
+    return null;
+  }
+}
+
+export type ProductDetail = {
+  itemId: string;
+  name: string;
+  category: string;
+  price: number;
+  colours: string[];
+  width: number | null;
+  height: number | null;
+  depth: number | null;
+  imageUrl: string;
+};
+
+// Full single-product detail. Deliberately strips the embedded base64
+// image (the raw API response includes it) — callers get a URL instead via
+// getCatalogueImageUrl, same as search-index results. Needs an exact
+// item_id; there's no name-based lookup on this endpoint.
+export async function fetchProductDetailFromApi(itemId: string): Promise<ProductDetail | null> {
+  if (!isBrowsingConfigured()) return null;
+
+  try {
+    const res = await fetch(apiUrl(`/catalogue/${encodeURIComponent(itemId)}`), {
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      console.warn(`Furniture API product detail lookup failed: ${res.status} ${res.statusText}`);
+      return null;
+    }
+
+    const data = await res.json();
+    return {
+      itemId: data.item_id,
+      name: data.product_name,
+      category: data.category,
+      price: data.price,
+      colours: data.colours ?? [],
+      width: data.width ?? null,
+      height: data.height ?? null,
+      depth: data.depth ?? null,
+      imageUrl: getCatalogueImageUrl(data.item_id)!,
+    };
+  } catch (err) {
+    console.warn("Furniture API product detail request threw an error:", err);
     return null;
   }
 }
@@ -148,13 +196,19 @@ export async function fetchUserBalance(): Promise<UserBalance | null> {
   }
 }
 
+// "other" covers anything we haven't specifically classified (network
+// failure, unexpected status, etc.) — callers should show the raw message
+// for that case rather than inventing a friendly explanation for an error
+// shape we don't actually understand.
+export type PlaceOrderErrorCode = "insufficient_balance" | "not_found" | "other";
+
 export type PlaceOrderResult =
   | { ok: true; orderId: string; totalPrice: number; remainingBalance: number }
-  | { ok: false; error: string };
+  | { ok: false; error: string; code: PlaceOrderErrorCode };
 
 export async function placeOrderViaApi(itemId: string, quantity: number): Promise<PlaceOrderResult> {
   if (!isAccountConfigured()) {
-    return { ok: false, error: "The furniture shop API isn't configured." };
+    return { ok: false, error: "The furniture shop API isn't configured.", code: "other" };
   }
 
   try {
@@ -169,7 +223,9 @@ export async function placeOrderViaApi(itemId: string, quantity: number): Promis
     if (!res.ok) {
       const message =
         typeof data.detail === "string" ? data.detail : `Order failed (${res.status}).`;
-      return { ok: false, error: message };
+      const code: PlaceOrderErrorCode =
+        res.status === 402 ? "insufficient_balance" : res.status === 404 ? "not_found" : "other";
+      return { ok: false, error: message, code };
     }
 
     return {
@@ -180,7 +236,7 @@ export async function placeOrderViaApi(itemId: string, quantity: number): Promis
     };
   } catch (err) {
     console.warn("Furniture API order placement threw an error:", err);
-    return { ok: false, error: "Couldn't reach the furniture shop API. Try again." };
+    return { ok: false, error: "Couldn't reach the furniture shop API. Try again.", code: "other" };
   }
 }
 

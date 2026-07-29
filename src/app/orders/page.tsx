@@ -40,11 +40,36 @@ export default async function OrdersPage() {
 
       {display.source === "api" ? (
         <div className="mb-8 rounded-2xl border border-border bg-card p-4 shadow-sm">
-          <p className="text-sm text-card-foreground">
-            Balance: <span className="text-accent font-medium">${display.balance.toFixed(2)}</span>
+          <div className="mb-2 flex justify-between text-sm text-card-foreground">
+            <span>Your allowance spent: ${display.personalSpent.toFixed(2)}</span>
+            <span>Your allowance: ${display.personalAllowance.toFixed(2)}</span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full bg-primary"
+              style={{
+                width: `${Math.min(100, (display.personalSpent / display.personalAllowance) * 100)}%`,
+              }}
+            />
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Your remaining allowance:{" "}
+            <span
+              className={
+                display.personalRemaining < 0 ? "text-red-600 font-medium" : "text-accent font-medium"
+              }
+            >
+              ${display.personalRemaining.toFixed(2)}
+            </span>
+          </p>
+          <p className="mt-3 border-t border-border pt-2 text-sm text-card-foreground">
+            Shared account balance:{" "}
+            <span className="text-accent font-medium">${display.sharedBalance.toFixed(2)}</span>
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Live from the furniture shop API ({display.name})
+            Live from the furniture shop API ({display.accountName}). This balance is shared
+            across every user of this app — your allowance above is your own personal spending
+            cap on top of it.
           </p>
         </div>
       ) : (
@@ -86,7 +111,15 @@ export default async function OrdersPage() {
                     {new Date(order.timestamp).toLocaleString()}
                   </p>
                 </div>
-                <p className="font-medium text-card-foreground">${order.totalAmount.toFixed(2)}</p>
+                <div className="flex items-center gap-3">
+                  <p className="font-medium text-card-foreground">${order.totalAmount.toFixed(2)}</p>
+                  <a
+                    href={`/api/orders/${order.orderId}/invoice`}
+                    className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-muted"
+                  >
+                    Invoice
+                  </a>
+                </div>
               </li>
             ))}
           </ul>

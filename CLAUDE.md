@@ -11,18 +11,36 @@ Prefer simple, well-commented-where-it-matters code over clever
 abstractions.
 
 ## Core features
+- **Public browsing**: the catalogue (`/`) needs no account — anyone can
+  browse, filter by category, and switch between a card grid and a compact
+  list view. Only *placing an order* requires login, gated per-product
+  (`ApiProductCard`/`ProductCard` show "Log in (top right) to buy" in place
+  of the quantity/purchase controls when logged out) — not a page-level
+  redirect. Login itself is embedded directly in the Navbar
+  (`InlineLoginForm.tsx`) so browsing and logging in both happen on the same
+  page without navigating away; `/login` and `/signup` still exist as
+  full pages too (linked from the inline form, and reachable directly).
 - **Login / signup**: email + password, sessions via secure cookie (this
   app's own account system — separate from the furniture shop API's single
   shared account, see below).
 - **Catalogue**: browse furniture products with real photos, filterable by
-  category, paginated. Live from the furniture shop API when configured
-  (always, currently), falls back to a local demo catalogue otherwise.
-- **Purchasing**: pick a quantity and buy directly from a product card. This
-  calls the real furniture shop API, which really deducts from the real
-  balance and generates a real PDF invoice server-side.
+  category, paginated, viewable as cards or a list. Live from the furniture
+  shop API when configured (always, currently), falls back to a local demo
+  catalogue otherwise.
+- **Purchasing**: pick a quantity and buy directly from a product card (once
+  logged in). This calls the real furniture shop API, which really deducts
+  from the real balance and generates a real PDF invoice server-side.
 - **Balance**: Navbar and the Orders page show the real, live balance from
   the furniture shop API, not a locally-tracked number.
 - **Orders**: order history is read live from the furniture shop API too.
+- **AI shopping assistant**: a chat box on the home page (logged-in users
+  only) lets a user ask in plain English ("show me a cheap chair," "what's
+  my balance," "buy the white stool"). An agent (Azure OpenAI, tool-calling)
+  answers using the same four furniture-shop actions a human has, reasoning
+  over raw results itself for anything the API can't filter on (price,
+  colour), and can only *propose* a purchase — the actual transaction
+  requires a real Confirm-button click, not anything the model says. See
+  "AI shopping assistant" section below and `agent-tools.md`.
 
 ## Tech stack
 - **Next.js** (React, App Router, TypeScript) — one project for both pages
@@ -51,15 +69,18 @@ src/
       auth/logout/route.ts
       orders/route.ts      # local-fallback order placement (GET list / POST)
       orders/live/route.ts # real order placement via the furniture shop API
+      agent/route.ts        # AI assistant chat endpoint (auth-gated)
   components/
     ApiProductCard.tsx      # live catalogue card: image, qty, real purchase
     ProductCard.tsx          # local-fallback catalogue card
+    AgentChat.tsx            # AI shopping assistant chat box
     Navbar.tsx, LogoutButton.tsx, AuthForm.tsx
   lib/
     db.ts                  # Prisma client singleton
     auth.ts                # session cookie helpers (sign/verify/get current user)
     budget.ts               # getDisplayBudget(): API balance, else local
     furnitureApi.ts          # all furniture shop API calls (see below)
+    agent.ts                 # AI agent: tool schemas + tool-calling loop
 prisma/
   schema.prisma          # User, Product, Order (local fallback); LiveOrder
                           # (links local users to real API order_ids, used
@@ -149,11 +170,216 @@ Orders page (`src/app/orders/page.tsx`) fetches the full shared history from
 `GET /orders/{user_id}` but filters it down to only the order_ids present in
 that user's own `LiveOrder` rows before displaying anything. Verified with
 two separate signups: User A's purchase shows up on User A's Orders page and
-nowhere on User B's, while both see the same shared balance. Old orders
-placed before this existed (or by other teams, if any ever shared this key)
-have no local link for anyone, so they don't show up for any app user —
-effectively "cleared" from view without needing (or being able) to delete
-anything on the real API.
+nowhere on User B's. Old orders placed before this existed (or by other
+teams, if any ever shared this key) have no local link for anyone, so they
+don't show up for any app user — effectively "cleared" from view without
+needing (or being able) to delete anything on the real API.
+
+## Personal spending allowance (two-tier balance)
+The furniture API only gives every app user the same one shared balance —
+there's no way to give a new signup a genuinely separate real balance (the
+`/claim` endpoint just re-issues credentials for pre-registered event
+emails, it doesn't mint new accounts on demand). So "does a new user get a
+new balance?" is answered with a personal allowance layered on top of the
+shared balance, not a second real account:
+
+- **Shared balance**: the real number from `GET /users/{user_id}`. Same for
+  every app user, always.
+- **Personal allowance**: `User.budget` (defaults to $2000 at signup, same
+  default the local-fallback system already used) minus this user's own
+  `LiveOrder.totalPrice` sum (`getLiveSpending()` in `src/lib/budget.ts`).
+  Independent per local account.
+
+A purchase must satisfy **both**. `src/app/api/orders/live/route.ts` checks
+the personal allowance first, entirely locally, *before* ever calling the
+real API — no reason to touch the shared balance for a purchase this user
+personally isn't allowed to make. `LiveOrder.totalPrice` (added via a
+migration) makes this possible without re-fetching order history from the
+API every time.
+
+Distinct error codes for the two failure modes (`src/lib/orderErrors.ts`):
+`personal_allowance_exceeded` (checked locally, message already has real
+numbers, shown as-is) vs `insufficient_balance` (the real API's own 402,
+raw message translated into plain language). Verified independently: gave
+a test user a personal allowance of $5 and tried to buy a $51.60 item — got
+`personal_allowance_exceeded` with zero real API calls made, confirming the
+local gate runs first and doesn't touch the shared balance for a blocked
+purchase, even though the shared balance easily could have covered it.
+
+Navbar and the Orders page (`getDisplayBudget()`) show both numbers
+separately, never merged into one. The AI assistant's `propose_order` and
+`check_balance` tools do the same — both `sufficientSharedFunds` and
+`sufficientPersonalAllowance` are reported, and the system prompt tells the
+agent to name which specific limit is blocking a purchase rather than a
+vague "not enough money."
+
+## AI shopping assistant
+A floating chat widget (`src/components/FloatingChatWidget.tsx`) fixed to
+the bottom-right corner, rendered once in the root layout so it's on every
+page — not page-scoped, and its open/closed state + conversation persist
+across client-side navigation since the layout doesn't remount. Click the
+💬 button to open/close. The actual conversation UI (`AgentChat.tsx`) is a
+plain content component now — no card chrome of its own, the widget
+supplies that. Backed by `POST /api/agent` → `src/lib/agent.ts`. Full tool
+design/rationale lives in `agent-tools.md`; this is the implementation
+summary.
+
+**No login required to chat.** `runAgent()` takes `localUser: User | null`.
+`search_catalogue`/`get_product` work identically either way (browsing
+never needed auth). `check_balance`/`propose_order` return a graceful
+"log in first" message (no crash, no raw error) when `localUser` is null,
+and the system prompt tells the model this up front so it says so
+proactively rather than needing a failed tool call first. Verified: asked
+about categories with zero cookies → full answer; asked for balance or to
+buy something logged out → both gracefully redirected to login with no
+tool call attempted (empty `toolLog` in the response, confirming the model
+didn't even try).
+
+**Model**: Azure OpenAI, `gpt-5-mini` deployment (`AZURE_OPENAI_*` in
+`.env` — endpoint, key, api version, deployment name). Confirmed working
+directly (plain chat) and with tool-calling before building anything on top
+of it.
+
+**Four tools**, matching the four furniture-shop actions requested:
+`search_catalogue`, `get_product`, `check_balance`, `propose_order`. The
+first three wrap the same `src/lib/furnitureApi.ts` functions the rest of
+the app uses. The fourth is deliberately *not* a real purchase — see
+"Purchase safety" below.
+
+**The core design constraint**: the real API can only filter catalogue
+results by an exact category — no price, colour, or style filtering. The
+system prompt (built fresh per request in `runAgent()`, including the
+current category list fetched live so it's never stale) tells the model
+this explicitly and instructs it to fetch a category's raw results and
+apply that judgement itself, rather than let it assume or invent API
+parameters that don't exist. Verified this actually happens, not just
+documented as intent — see `agent-tools.md`'s "Verified behavior" section
+for the specific test transcripts (a "cheap chair" query correctly told the
+user *"I filtered these manually because the catalogue search can't filter
+by price"*; a colour query correctly searched multiple relevant categories
+and flagged one item whose colour data was missing rather than guessing).
+
+**Purchase safety — structural, not prompt-based.** The model cannot place
+an order. Its fourth tool, `propose_order`, has no side effects: it looks
+up the real current price and real current balance and returns a proposal
+(never trusting a price the model might state). The UI (`AgentChat.tsx`)
+renders that proposal as a card with real Confirm/Cancel buttons. Only
+clicking **Confirm** calls `/api/orders/live` — the same route the regular
+product cards already use — completely bypassing the model for the actual
+transaction. This replaced an earlier design where the model had a real
+`place_order` tool and the system prompt just *asked* it to confirm with
+the user first; that worked in testing, but a prompt instruction is a soft
+constraint the model could in principle skip on an ambiguous phrasing
+("buy whichever one you think is best" reads a lot like implicit
+confirmation to a model without a clear "yes"). For something real,
+irreversible, and financial, the safety boundary now lives in code the
+model has no path to bypass, not in wording it's asked to follow.
+
+Verified both halves independently: asked the agent "Buy me 1 of item X"
+directly (no hedging) → it only proposed, and balance was confirmed
+unchanged against the real API. Separately simulated the exact Confirm
+button request → balance moved for real ($396 → $390), and the order
+linked correctly to that account's Orders page via the same `LiveOrder`
+mechanism as a regular UI purchase.
+
+**Error handling — plain language, not raw API text.** The two errors that
+can actually occur here (402 insufficient balance, 404 unknown item_id) are
+classified by HTTP status in `placeOrderViaApi` (`furnitureApi.ts`) into a
+`code` field, and `src/lib/orderErrors.ts`'s `friendlyOrderError()` turns
+that into a message + a concrete suggestion — shared between the AI
+assistant's confirmation card and the regular product cards, so the same
+failure looks the same (and stays friendly) regardless of which UI hit it.
+`propose_order` applies the same standard proactively: if it detects
+insufficient funds or a bad item_id before the user ever reaches Confirm,
+the system prompt tells the agent to explain that in plain language with a
+next step, not relay raw numbers coldly. Verified: asked the agent to buy
+1,000 of a £6 item against a £390 balance → it explained the £5,610
+shortfall and offered three concrete alternatives (an affordable quantity,
+a smaller custom quantity, or a cheaper item) rather than surfacing
+anything raw. An unclassified error still shows its raw message rather than
+a fabricated explanation — better to be honestly unhelpful than
+confidently wrong about a failure shape that isn't actually understood.
+
+**Known gap, already found and fixed once**: the first version of
+`search_catalogue`'s tool description promised colours were included in
+results, but the code stripped them — this silently forced the agent into
+~12 slow sequential `get_product` calls just to check colours one item at a
+time (a colour query took ~38s). Fixed by actually including `colours` in
+what the tool returns; the same query now takes ~18s in one pass. Worth
+remembering: a tool description that overpromises is exactly the kind of
+"honesty gap" this whole design is supposed to avoid — including our own.
+
+**Not implemented**: multi-turn history is kept client-side in
+`AgentChat.tsx`'s React state and resent with each request (not persisted
+server-side, so a page refresh loses the conversation). Order history and
+invoice lookup aren't agent tools yet, only the four originally scoped.
+
+## UI/design notes
+- **Always light/white**, deliberately — `globals.css` has no
+  `@media (prefers-color-scheme: dark)` block, so the app looks the same
+  regardless of the visitor's system theme (background/card are pure
+  `#ffffff`; warm terracotta/sage accent colours from earlier still apply).
+- **Card vs. list view**: a `?view=card|list` URL param (default `card`,
+  `ViewToggle` component in `page.tsx`) switches the catalogue between the
+  photo-grid cards and a compact single-line-per-product list. Both
+  `ApiProductCard` and `ProductCard` take a `layout` prop and share all
+  purchase logic/state — only the JSX differs — so behavior (including the
+  logged-out "Log in to buy" gating below) is identical in both views.
+- **Login page**: `AuthForm.tsx` is a split layout — a real furniture photo
+  from the catalogue API (hardcoded item `59270274`, a 2-seat sofa; picked
+  for looking good, not functionally significant) fills the left side with
+  an overlay headline, the actual form sits on the right. Used for both
+  `/login` and `/signup`.
+
+## Public browsing vs. login-gated purchasing
+The catalogue used to require login just to *look* at products — changed so
+browsing is public and only buying needs an account, gated at the product
+level rather than the page level:
+- `src/app/page.tsx` no longer redirects logged-out visitors; it still
+  calls `getCurrentUser()` and passes `loggedIn={!!user}` down to every
+  product card.
+- Product cards render their real quantity/purchase controls only when
+  `loggedIn`; otherwise a plain "Log in (top right) to buy" message takes
+  their place — no dead click, no confusing 401 from the API.
+- The AI assistant is hidden for logged-out visitors (its tools assume a
+  real local user throughout — personal allowance, order linking — so
+  gating the whole feature was simpler and more honest than trying to offer
+  a partial, account-less version of it).
+- **Login is embedded in the page, not just linked to.** `Navbar.tsx`
+  renders `InlineLoginForm.tsx` for logged-out visitors — a compact
+  email/password form directly in the header. `/login` and `/signup` still
+  exist as full pages (the redesigned split-layout ones), reachable from
+  the inline form's "Sign up" link or by direct navigation, but logging in
+  no longer requires leaving the shopping page.
+- `/orders` still redirects to `/login` — order history is inherently
+  account-specific, unlike browsing.
+- Verified end-to-end: fetched `/` with zero cookies → 200 (not a redirect),
+  catalogue visible, "Log in to buy" and "Log in to chat" shown in place of
+  purchase controls and the AI assistant; `/orders` still redirected;
+  signing up made the same page immediately show full "Place order" and
+  "Ask the shopping assistant" controls.
+
+## Branded PDF invoices
+`GET /api/orders/{orderId}/invoice` generates and streams our own PDF
+(`src/lib/invoice.tsx`, via `@react-pdf/renderer`) — distinct from the
+furniture shop API's own `GET /orders/{order_id}/invoice`, which is real
+and works but is their generic document, not restylable by us. Colours are
+hand-copied from `globals.css` (kept in sync manually — `@react-pdf/renderer`
+can't read CSS custom properties). Linked from each order on the Orders
+page ("Invoice" button next to the total).
+
+**Ownership is enforced server-side, not just hidden in the UI**: the route
+checks `LiveOrder` for a row matching both the `orderId` *and* the
+requesting session's `userId` before generating anything — without this,
+any logged-in user could download any order's invoice just by knowing its
+ID (the furniture API account is shared, so order IDs aren't secret to the
+account, only the local `LiveOrder` link ties one to a specific app user).
+Verified with two accounts: user B got a 404 trying user A's order ID (not
+403 — doesn't confirm the order exists, just says not found), and a
+no-cookie request got a plain 401. Verified the actual PDF content too, not
+just that a file downloads: decompressed the PDF stream and confirmed the
+header's fill colour decodes to exactly `#e2795a` (our primary brand
+colour) and the customer-email field matches the real logged-in account.
 
 ## Performance (target: page responsive within 2s)
 Measured via repeated `curl` timing against the running dev server:
@@ -184,8 +410,47 @@ Measured via repeated `curl` timing against the running dev server:
 - [x] Performance verified: page loads ~0.5–1.2s (well under the 2s target);
       order placement is slow (~3.5–15s) but that's confirmed external API
       latency, mitigated with "still working" UI feedback
+- [x] Orders linked to local app users (`LiveOrder`) — verified two separate
+      accounts each only see their own purchases, not each other's
+- [x] Personal spending allowance per user, layered on the one shared real
+      balance — verified two accounts each get an independent $2000 cap,
+      and that hitting the personal cap is checked locally before ever
+      calling the real API
+- [x] AI shopping assistant: chat box on the home page, 4-tool agent
+      (Azure OpenAI) reasoning over raw results for price/colour, confirms
+      before spending real money via a structural (not prompt-based) gate,
+      explains insufficient-balance/not-found errors in plain language —
+      verified end-to-end including real balance-moving purchases
+- [x] Public browsing — catalogue no longer requires login; purchasing and
+      the AI assistant do, gated per-component not per-page; login embedded
+      directly in the Navbar instead of requiring page navigation
+- [x] Card/list view toggle on the catalogue, always-light theme (no dark
+      mode variant), redesigned split-layout login/signup pages
+- [x] AI assistant moved to a global floating widget (bottom-right, every
+      page), usable without login — browsing tools work for anyone,
+      account-specific tools gracefully redirect to login instead of erroring
+- [x] Branded PDF invoices, own design (not a passthrough of the furniture
+      API's generic one), download ownership enforced server-side —
+      verified against real order data and a decompressed PDF content check
 
-Not yet done: wiring the invoice PDF endpoint, deployment.
+Not yet done: order-history/invoice agent tools, deployment.
+
+**Still paused mid-build**: webhook-based order notifications (see the
+"AI shopping assistant" section's sibling further up — search for
+`FURNITURE_WEBHOOK_ID`). A real webhook is registered and a debug receiver
+is logging deliveries, but signature verification, the `Notification`
+model, and the UI still don't exist.
+
+**In progress, paused mid-build (safe checkpoint, nothing broken):**
+webhook-based order notifications. A real webhook is already registered
+with the furniture API (`POST /webhooks` → `webhook_id` and `secret` saved
+in `.env` as `FURNITURE_WEBHOOK_ID`/`FURNITURE_WEBHOOK_SECRET`, pointed at
+our ngrok URL + `/api/webhooks/furniture-shop`). That route currently only
+exists as a debug stub that logs whatever arrives — signature verification,
+the `Notification` data model, and the actual UI haven't been built yet.
+Next step: trigger `POST /webhooks/{webhook_id}/test`, inspect the real
+payload/signature format that arrives (don't guess from docs alone), then
+build the real receiver + notification UI against what's actually observed.
 
 ## Notes for future sessions
 - User has no coding background — explain changes in plain English, avoid

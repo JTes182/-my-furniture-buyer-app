@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getCurrentUser } from "@/lib/auth";
 import { getDisplayBudget } from "@/lib/budget";
 import LogoutButton from "@/components/LogoutButton";
+import InlineLoginForm from "@/components/InlineLoginForm";
 
 export default async function Navbar() {
   const user = await getCurrentUser();
@@ -14,7 +15,7 @@ export default async function Navbar() {
           🛋️ Comfy Land
         </Link>
 
-        {user && display && (
+        {user && display ? (
           <nav className="flex items-center gap-6 text-sm">
             <Link href="/" className="hover:text-primary">
               Catalogue
@@ -23,9 +24,20 @@ export default async function Navbar() {
               My Orders
             </Link>
             {display.source === "api" ? (
-              <span className="rounded-full bg-muted px-3 py-1 text-muted-foreground">
-                Balance: <strong className="text-accent">${display.balance.toFixed(2)}</strong>
-              </span>
+              <>
+                <span className="rounded-full bg-muted px-3 py-1 text-muted-foreground">
+                  Your allowance:{" "}
+                  <strong
+                    className={display.personalRemaining < 0 ? "text-red-600" : "text-accent"}
+                  >
+                    ${display.personalRemaining.toFixed(2)}
+                  </strong>{" "}
+                  / ${display.personalAllowance.toFixed(2)}
+                </span>
+                <span className="rounded-full bg-muted px-3 py-1 text-muted-foreground">
+                  Shared balance: <strong className="text-accent">${display.sharedBalance.toFixed(2)}</strong>
+                </span>
+              </>
             ) : (
               <span className="rounded-full bg-muted px-3 py-1 text-muted-foreground">
                 Budget left:{" "}
@@ -37,6 +49,13 @@ export default async function Navbar() {
             )}
             <span className="text-muted-foreground">{user.email}</span>
             <LogoutButton />
+          </nav>
+        ) : (
+          <nav className="flex items-center gap-4 text-sm">
+            <Link href="/" className="hover:text-primary">
+              Catalogue
+            </Link>
+            <InlineLoginForm />
           </nav>
         )}
       </div>

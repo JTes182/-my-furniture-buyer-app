@@ -48,12 +48,16 @@ model Order {
 // The API's account (FURNITURE_API_USER_ID) is shared across every local
 // app user, so GET /orders/{user_id} returns everyone's purchases mixed
 // together — this table is how we know which ones "belong" to which local
-// user, purely for display on their Orders page. Doesn't duplicate order
-// details (product, price, quantity); those are still fetched fresh from
-// the API and matched up by apiOrderId.
+// user, both for display on their Orders page and to enforce each user's
+// own personal spending allowance (User.budget) against a shared account
+// that has no per-user concept of its own. totalPrice is a copy of the
+// real API's total_price at purchase time, kept here (rather than always
+// re-fetched) so a user's personal spending total can be computed without
+// hitting the external API's order-history endpoint.
 model LiveOrder {
   id         String   @id @default(cuid())
   apiOrderId String   @unique
+  totalPrice Float    @default(0)
   createdAt  DateTime @default(now())
 
   user   User   @relation(fields: [userId], references: [id])

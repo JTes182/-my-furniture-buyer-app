@@ -13,19 +13,46 @@ export async function getBudgetSummary(user: User) {
   return { budget: user.budget, spent, remaining };
 }
 
-// Prefers the real furniture shop balance (GET /users/{user_id}) once
-// FURNITURE_API_BASE_URL/KEY/USER_ID are all set in .env; falls back to our
-// own locally-tracked budget until then. Note: local orders placed through
-// this app don't affect the real API balance (and vice versa) — the two
-// numbers aren't kept in sync yet.
+// How much this local user has personally spent via LiveOrder-linked
+// purchases (real orders placed through this app, attributed to them).
+export async function getLiveSpending(userId: string) {
+  const result = await prisma.liveOrder.aggregate({
+    where: { userId },
+    _sum: { totalPrice: true },
+  });
+  return result._sum.totalPrice ?? 0;
+}
+
+// The furniture shop API only gives us one shared account/balance across
+// every local app user — there's no way to give each signup a genuinely
+// separate real balance. So "new user, new balance" is implemented as a
+// personal spending *allowance* (User.budget, same $2000 default as the
+// local-fallback system) layered on top of the one shared real balance:
+// every purchase must satisfy both the real API's own balance check AND
+// this user's own allowance, tracked locally via LiveOrder.totalPrice.
 export type DisplayBudget =
-  | { source: "api"; name: string; balance: number }
+  | {
+      source: "api";
+      accountName: string;
+      sharedBalance: number;
+      personalAllowance: number;
+      personalSpent: number;
+      personalRemaining: number;
+    }
   | { source: "local"; budget: number; spent: number; remaining: number };
 
 export async function getDisplayBudget(user: User): Promise<DisplayBudget> {
   const apiBalance = await fetchUserBalance();
   if (apiBalance) {
-    return { source: "api", name: apiBalance.name, balance: apiBalance.balance };
+    const personalSpent = await getLiveSpending(user.id);
+    return {
+      source: "api",
+      accountName: apiBalance.name,
+      sharedBalance: apiBalance.balance,
+      personalAllowance: user.budget,
+      personalSpent,
+      personalRemaining: user.budget - personalSpent,
+    };
   }
   const local = await getBudgetSummary(user);
   return { source: "local", ...local };

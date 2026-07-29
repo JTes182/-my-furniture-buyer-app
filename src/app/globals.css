@@ -31,21 +31,8 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #241e1a;
-    --foreground: #f5eae0;
-    --card: #2e2621;
-    --card-foreground: #f5eae0;
-    --primary: #e8886a;
-    --primary-foreground: #241e1a;
-    --accent: #8fbf8a;
-    --accent-foreground: #17241a;
-    --muted: #362d27;
-    --muted-foreground: #c9b8aa;
-    --border: #3d332c;
-  }
-}
+/* Deliberately no @media (prefers-color-scheme: dark) block — the app
+   should always be white/light, regardless of the visitor's system theme. */
 
 body {
   background: var(--background);
